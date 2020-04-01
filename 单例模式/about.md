@@ -182,7 +182,30 @@
 	    }
 	}
 
-通过使用同步代码块的方式减小了锁的范围。这样可以大大提高效率。
+通过使用同步代码块的方式减小了锁的范围。这样可以大大提高效率。但是，该代码还存在隐患。隐患的原因主要和Java内存模型（JMM）有关。在J2SE 1.4或更早的版本中使用双重检查锁有潜在的危险，有时会正常工作（区分正确实现和有小问题的实现是很困难的。取决于编译器，线程的调度和其他并发系统活动，不正确的实现双重检查锁导致的异常结果可能会间歇性出现。重现异常是十分困难的。） 在J2SE 5.0中，这一问题被修正了。volatile关键字保证多个线程可以正确处理单件实例。
+
+	public class VolatileSingleton {
+	    // 私有的构造函数,外部无法访问
+	    private VolatileSingleton () {
+	        System.out.println("VolatileSingleton is created");
+	    }
+	
+	    // 在类内部定义一个实例
+	    private static volatile VolatileSingleton instance = null;
+	
+	    // 对外提供获取实例的静态方法
+	    public static VolatileSingleton getInstance() {
+	        // 在对象被使用的时候才进行初始化
+	        if (instance == null) {
+	            synchronized (VolatileSingleton.class) {
+	                if (instance == null) {
+	                    instance = new VolatileSingleton();
+	                }
+	            }
+	        }
+	        return instance;
+	    }
+	}
 
 ### 静态内部类式
 
@@ -209,5 +232,86 @@
 
 同时，由于实例的建立是在类加载时完成，故天生对多线程友好，getInstance()方法也不需要使用同步关键字。
 
+### 防止序列化破坏单例模式
 
+通常情况下，用以上方式实现的单例已经可以确保在系统中只存在唯一实例了。但仍然有例外的情况，可能导致系统生成多个实例。比如，**在代码中，通过反射机制，强行调用单例类的私有构造方法，生成多个单例。**比如使用可以序列化的双重校验锁进行测试：
 
+代码示例：
+
+	public class VolatileSingleton implements Serializable {
+	    // 私有的构造函数,外部无法访问
+	    private VolatileSingleton () {
+	        System.out.println("VolatileSingleton is created");
+	    }
+	
+	    // 在类内部定义一个实例
+	    private static volatile VolatileSingleton instance = null;
+	
+	    // 对外提供获取实例的静态方法
+	    public static VolatileSingleton getInstance() {
+	        // 在对象被使用的时候才进行初始化
+	        if (instance == null) {
+	            synchronized (VolatileSingleton.class) {
+	                if (instance == null) {
+	                    instance = new VolatileSingleton();
+	                }
+	            }
+	        }
+	        return instance;
+	    }
+	}
+
+代码测试：
+
+	public class Main {
+	    public static void main(String[] args) throws Exception{
+	        VolatileSingleton s1 = null;
+	        VolatileSingleton s = VolatileSingleton.getInstance();
+	        // 先将实例串行化到文件
+	        FileOutputStream fos = new FileOutputStream("F:\\VolatileSingleton.txt");
+	        ObjectOutputStream oos = new ObjectOutputStream(fos);
+	        oos.writeObject(s);
+	        oos.flush();
+	        oos.close();
+	        // 从文件读出原有的单例类
+	        FileInputStream fis = new FileInputStream("F:\\VolatileSingleton.txt");
+	        ObjectInputStream ois = new ObjectInputStream(fis);
+	        s1 = (VolatileSingleton) ois.readObject();
+	        System.out.println(s == s1);
+	    }
+	}
+
+测试结果：
+
+	false
+
+以上说明：**通过对VolatileSingleton的序列化与反序列化得到的对象是一个新的对象，这就破坏了VolatileSingleton的单例性。**那么要如何解决这个问题呢？只要在VolatileSingleton类中定义readResolve就可以解决该问题：
+
+	public class VolatileSingleton implements Serializable {
+	    // 私有的构造函数,外部无法访问
+	    private VolatileSingleton () {
+	        System.out.println("VolatileSingleton is created");
+	    }
+	
+	    // 在类内部定义一个实例
+	    private static volatile VolatileSingleton instance = null;
+	
+	    // 对外提供获取实例的静态方法
+	    public static VolatileSingleton getInstance() {
+	        // 在对象被使用的时候才进行初始化
+	        if (instance == null) {
+	            synchronized (VolatileSingleton.class) {
+	                if (instance == null) {
+	                    instance = new VolatileSingleton();
+	                }
+	            }
+	        }
+	        return instance;
+	    }
+	
+	    private Object readResolve () {
+	        return instance;
+	    }
+	}
+
+事实上，在实现了私有的readResolve()方法之后，readObject()已经形同虚设，它直接使用readResolve()替换了原本的返回值，从而在形式上构造了单例。具体的序列化是如何破坏单例性分析请参见该文章[单例与序列化的那些事儿](http://www.hollischuang.com/archives/1144)
